@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+
+# Notebooks output (optional but keeps diffs readable)
+# *.ipynb
+
+# Data — usually too large for git
+data/
+*.fits
+*.hdf5
+*.h5
+*.npy
+*.npz
+*.csv
+*.parquet
+*.pq
+
+# Model artefacts
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+runs/
+wandb/
+mlruns/
+
+# Secrets and local config
+.env
+*.key
+config.local.yaml
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
