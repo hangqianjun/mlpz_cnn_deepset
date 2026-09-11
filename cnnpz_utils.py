@@ -32,6 +32,8 @@ import pickle
 from scipy.stats import sigmaclip
 import matplotlib.gridspec as gridspec
 
+from tensorflow.keras import layers, models, callbacks
+
 
 def rebin_filter(bin_edges, counts, new_edges):
   new_counts = []
@@ -53,7 +55,7 @@ def get_bin_edges(centres):
     return np.concatenate([[first_edge], inner_edges, [last_edge]])
 
 
-def convert_data_format(df, lambda_array_cen, no_detect = np.nan, no_obs = np.inf, no_detect_val = 0,
+def convert_data_format(df, lambda_array_cen, filter_blocks, no_detect = np.nan, no_obs = np.inf, no_detect_val = 0,
                        no_obs_val = 0):
     # no detection: setting to nan, sensitivity = 1
     # no observation: setting to inf, sensitivity = 0
@@ -425,10 +427,13 @@ def stretch(x, c=0.5, k=10):
     return np.clip(y, 0, 1)
 
 
-def transform_data_to_XY(data, apply_stretch = True, c=0.8, k=20):
-    data_transformed = convert_data_format(data, lambda_array_cen)
+def transform_data_to_XY(data, lambda_array_cen, filter_blocks, apply_stretch = True, c=0.8, k=20, missingY=False):
+    data_transformed = convert_data_format(data, lambda_array_cen, filter_blocks)
     # now split training and validation set:
-    Y = data['redshift']
+    if missingY==False:
+        Y = data['redshift']
+    else:
+        Y=0
     X = np.copy(data_transformed)
     #X[:,:,0] /= max_mag
     if apply_stretch == True:
@@ -447,7 +452,7 @@ def make_incomplete_nir_data(data, frac=0.5, sub_val = np.inf, apply_stretch = F
     return X_misnir, Y_misnir
 
 
-def visualize_the_data(X, Y, title="Example data vector"):
+def visualize_the_data(X, Y, lambda_array_cen, filter_blocks, title="Example data vector"):
     delta_wave = 1/len(lambda_array_cen)
     for i, b in enumerate("ugrizyJH"):
       plt.bar(X[i,:,1] , filter_blocks[b].astype(int), color=f'C{i}', width=delta_wave, alpha=0.2,
@@ -464,7 +469,7 @@ def visualize_the_data(X, Y, title="Example data vector"):
 
 
 # here code up a CNN to with a 1D filter:
-from tensorflow.keras import layers, models, callbacks
+
 
 def build_model(input_shape):
     # 6 layers
