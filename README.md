@@ -7,8 +7,11 @@ Functions and notes for the CNNPZ estimator
 - `CNN_photoz-ensemble-pz_challenge_t1/t2.ipyn` running model on the actual data challenge datasets, including pre-training on popcosmos mock for t2.
 
 Data on nersc: 
+`/global/cfs/cdirs/lsst/groups/PZ/users/qhang/cnnpz_data/`
+Under this folder contains:
+`bpz_mock_training_set.parquet`  `cardinal/`  `pop-cosmos-data/`
+the first file is used in the bpz notebook, the second folder contains the cardinal training and test data, the third contains the pop cosmos noisy data for pre-training.
 
-
-To make pz challenge submission:
+To-do's to make pz challenge submission:
 
 - Need to convert the output format (currently mean + std for the ensemble model) to a PDF in qp ensemble format
