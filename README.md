@@ -7,3 +7,8 @@ Functions and notes for the CNNPZ estimator
 - `CNN_photoz-ensemble-pz_challenge_t1/t2.ipyn` running model on the actual data challenge datasets, including pre-training on popcosmos mock for t2.
 
 Data on nersc: 
+
+
+To make pz challenge submission:
+
+- Need to convert the output format (currently mean + std for the ensemble model) to a PDF in qp ensemble format
