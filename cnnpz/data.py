@@ -106,12 +106,12 @@ def transform_data_to_XY(data, lambda_array_cen, filter_blocks, apply_stretch=Tr
     return X, Y
 
 
-def make_incomplete_nir_data(data, frac=0.5, sub_val=np.inf, apply_stretch=False):
+def make_incomplete_nir_data(data, lambda_array_cen, filter_blocks, frac=0.5, sub_val=np.inf, apply_stretch=False):
     subset = data.sample(frac=0.5)
     idx = subset.index
     idx = list(subset.index)
     data_copy = data.copy()
     data_copy.loc[idx, "mag_J_roman"] = np.inf
     data_copy.loc[idx, "mag_H_roman"] = np.inf
-    X_misnir, Y_misnir = transform_data_to_XY(data_copy, apply_stretch=apply_stretch)
+    X_misnir, Y_misnir = transform_data_to_XY(data_copy, lambda_array_cen, filter_blocks, apply_stretch=apply_stretch)
     return X_misnir, Y_misnir
