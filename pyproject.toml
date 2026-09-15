@@ -18,8 +18,14 @@ dependencies = [
     "packaging",
 ]
 
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov"]
+
 [tool.setuptools]
 packages = ["cnnpz"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
