@@ -112,11 +112,15 @@ def get_all_stats(
     stats = get_biweight_mean_sigma_outlier(dz, nclip=3, abs_out_thresh=0.2)
 
     # split in terms of i-mags and redshifts
+    n_zbins = len(redshift_bins) - 1
     redshift_stats = []
-    imag_stats = []
-    for i in range(10):
+    for i in range(n_zbins):
         ind = (Y > redshift_bins[i]) & (Y < redshift_bins[i + 1])
         redshift_stats.append(get_biweight_mean_sigma_outlier(dz[ind]))
+
+    n_imag_bins = len(imag_bins) - 1
+    imag_stats = []
+    for i in range(n_imag_bins):
         ind = (imag_data > imag_bins[i]) & (imag_data < imag_bins[i + 1])
         imag_stats.append(get_biweight_mean_sigma_outlier(dz[ind]))
 

@@ -179,13 +179,14 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
     # need to provide either the model or the model_dir to load the model
     # will always load model if both are provided
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    n_splits = 5 if pretrained_models is None else len(pretrained_models)
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     trained_models = []
     histories = []
 
     for fold, (idx_train, idx_val) in enumerate(kf.split(X_fortrain)):
-        print(f"\n--- Fold {fold+1}/5 ---")
+        print(f"\n--- Fold {fold+1}/{n_splits} ---")
         tf.keras.backend.clear_session()
 
         # ── Callbacks ─────────────────────────────────────────────────────────────────
