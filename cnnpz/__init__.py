@@ -7,10 +7,11 @@ import tensorflow as tf
 
 assert version.parse(tf.__version__) >= version.parse("2.8.0")
 
-from . import data, models, plotting, stats
+from . import data, models, plotting, qp_output, stats
 from .data import *
 from .models import *
 from .plotting import *
+from .qp_output import *
 from .stats import *
 
 plotting.set_plot_style()

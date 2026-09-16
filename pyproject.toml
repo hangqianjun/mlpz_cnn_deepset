@@ -18,6 +18,9 @@ dependencies = [
     "packaging",
 ]
 
+[project.optional-dependencies]
+qp = ["qp-prob>=1.0.1"]
+
 [tool.setuptools]
 packages = ["cnnpz"]
 
