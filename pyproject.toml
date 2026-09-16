@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-qp = ["qp-prob"]
+qp = ["qp-prob>=1.0.1"]
 
 [tool.setuptools]
 packages = ["cnnpz"]
