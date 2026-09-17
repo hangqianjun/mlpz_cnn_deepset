@@ -127,7 +127,7 @@ def load_ensemble(save_dir=""):
     return trained_models
 
 
-def train_ensembles(build_model_func, X, Y, N_SPLITS=5, EPOCHS=100, BATCH_SIZE=256, random_state=42):
+def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42):
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=random_state)
 
     trained_models = []
