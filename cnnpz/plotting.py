@@ -187,17 +187,17 @@ def compare_binned_stats(redshift_bins, imag_bins, redshift_stats1, imag_stats1,
     plt.tight_layout()
 
 
-def visualize_the_data(X, Y, lambda_array_cen, filter_blocks, title="Example data vector"):
-    delta_wave = 1 / len(lambda_array_cen)
-    for i, b in enumerate("ugrizyJH"):
-        plt.bar(X[i, :, 1], filter_blocks[b].astype(int), color=f"C{i}", width=delta_wave, alpha=0.2, edgecolor="white")
-    for i in range(5):
+def visualize_the_data(X, Y, lambda_bin_centers, title="Example data vector", n_examples=5):
+    """Plot a handful of example data vectors: the amplitude-weighted, binned curve
+    (channel 0) against wavelength, with each example's coverage channel (channel 2)
+    overlaid to show where photometry actually backs the curve."""
+    for i in range(n_examples):
         z = Y[i]
-        plt.plot(X[i, :, 1], X[i, :, 0], label=f"z={round(z,2)}")
-        plt.plot(X[i, :, 1], X[i, :, 2], color="k")
-    plt.plot(X[i, :, 1], X[i, :, 2], color="k", label="sensitivity")
+        plt.plot(lambda_bin_centers, X[i, :, 0], label=f"z={round(z,2)}")
+        plt.plot(lambda_bin_centers, X[i, :, 2], color="k")
+    plt.plot(lambda_bin_centers, X[i, :, 2], color="k", label="coverage")
     plt.ylabel("mag (normed)")
-    plt.xlabel("wavelength label")
+    plt.xlabel("wavelength")
     plt.legend()
     plt.title(title)
 
