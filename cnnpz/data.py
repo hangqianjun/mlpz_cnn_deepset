@@ -4,9 +4,9 @@ __all__ = [
     "rebin_filter",
     "get_bin_edges",
     "stretch",
-    "build_filter_bank",
+    "interpolate_filter_curves",
     "make_lambda_bins",
-    "build_binned_filter_operator",
+    "bin_filters",
     "convert_data_format",
     "transform_data_to_XY",
     "make_incomplete_nir_data",
@@ -53,13 +53,12 @@ def stretch(x, c=0.5, k=10):
 # down to a fixed number of CNN input bins.
 
 
-def build_filter_bank(filter_curves, bands, lambda_common):
+def interpolate_filter_curves(filter_curves, lambda_common):
     """
     Interpolate each band's raw (wavelength, transmission) curve onto lambda_common and
     area-normalize it so it integrates to 1 over lambda_common.
 
     filter_curves: dict[str -> (M, 2) array] raw curves keyed by band letter.
-    bands: sequence of band letters fixing row order, e.g. "ugrizyJH".
     lambda_common: (L,) shared, uniformly-spaced wavelength grid.
 
     Math
@@ -72,14 +71,16 @@ def build_filter_bank(filter_curves, bands, lambda_common):
 
     so overlapping/wide bands don't dominate purely by having a larger raw area -- credit
     between overlapping bands is instead split downstream, per wavelength bin, by
-    build_binned_filter_operator (equal split among the bands active in that bin, not by
-    relative transmission).
+    bin_filters (proportional to each band's actual response share within that bin).
 
     Returns filters_array, shape (n_bands, L).
     """
     dlambda = lambda_common[1] - lambda_common[0]
     raw_filters = np.array(
-        [np.interp(lambda_common, filter_curves[b][:, 0], filter_curves[b][:, 1], left=0, right=0) for b in bands]
+        [
+            np.interp(lambda_common, filter_curves[b][:, 0], filter_curves[b][:, 1], left=0, right=0)
+            for b in filter_curves.keys()
+        ]
     )
 
     area = raw_filters.sum(axis=1, keepdims=True) * dlambda
@@ -102,7 +103,7 @@ def make_lambda_bins(lambda_common, n_bins):
     return lambda_bin_centers, bin_idx
 
 
-def build_binned_filter_operator(filters_array, bin_idx, n_bins, lambda_common):
+def bin_filters(filters_array, n_bins, lambda_common):
     """
     Turn per-lambda-point, area-normalized filter curves (from build_filter_bank) into a
     fixed (n_bands, n_bins) linear operator, so the whole dataset can be transformed with
@@ -118,7 +119,7 @@ def build_binned_filter_operator(filters_array, bin_idx, n_bins, lambda_common):
         filters_binned[b, i] = raw_integral[b, i] / sum_b' raw_integral[b', i]
 
     A band contributes to bin i whenever filters_binned[b, i] > 0; that pattern is what
-    convert_data_format checks (against which bands were actually observed for a galaxy)
+    convert_data_format checks (against which bands were actually observed for a source)
     to build the coverage channel -- no separate operator is needed for it.
 
     Returns filters_binned, shape (n_bands, n_bins).
@@ -126,6 +127,7 @@ def build_binned_filter_operator(filters_array, bin_idx, n_bins, lambda_common):
     dlambda = lambda_common[1] - lambda_common[0]
     L = filters_array.shape[1]
 
+    lambda_bin_centers, bin_idx = make_lambda_bins(lambda_common, n_bins)
     W = np.zeros((n_bins, L))
     W[bin_idx, np.arange(L)] = 1.0
 
@@ -136,110 +138,90 @@ def build_binned_filter_operator(filters_array, bin_idx, n_bins, lambda_common):
     return filters_binned
 
 
-def convert_data_format(
-    df,
-    filters_binned,
-    bin_idx,
-    lambda_bin_centers,
-    bands,
-    no_detect=np.nan,
-    no_obs=np.inf,
-    no_detect_val=0,
-    no_obs_val=0,
-):
+def convert_data_format(mags, mag_i, filters_array, n_bins, lambda_common):
     """
-    Vectorized over all galaxies.
+    Vectorized over all sources.
 
-    df: galaxy dataframe with mag_{b}_lsst / mag_{b}_roman columns for b in `bands`.
-    filters_binned: (n_bands, n_bins) from build_binned_filter_operator(filters_array, ...).
-    bin_idx: unused directly here (kept for signature parity with the binning helpers);
-        n_bins is inferred from lambda_bin_centers.
-    bands: band letters matching filters_binned row order and df's mag columns, e.g.
-        "ugrizyJH".
+    mags: (n_filters, n_sources) raw per-band magnitudes, row order matching
+        filters_array's band rows. Missing values are encoded as np.nan (no detection) or
+        np.inf (no observation), same convention as the rest of the module.
+    mag_i: (n_sources,) i-band magnitude, subtracted from the binned curve.
+    filters_array: (n_filters, n_lambda) from interpolate_filter_curves(...).
+    n_bins: number of wavelength bins to bin down to.
+    lambda_common: (n_lambda,) wavelength grid matching filters_array.
 
-    no_detect_val/no_obs_val are accepted for parity with the historical block-based
-    signature but don't map onto a post-binning fill: each output bin here is a weighted
-    blend of possibly several bands rather than one band's passthrough, so a missing
-    band's amplitude is zeroed before binning (see below) rather than the output bin
-    being overwritten afterwards.
-
-    Returns X, shape (N, n_bins, 3):
+    Returns X, shape (n_sources, n_bins, 3):
       channel 0: binned, amplitude-weighted curve value, i-band-normalized -- the i-band
-        subtraction is applied to the binned curve itself (mags_data - mag_i_lsst), not
-        to the per-band amplitudes before binning. Zeroed in bins with no coverage (see
-        channel 2), rather than left as the raw -mag_i_lsst offset.
-      channel 1: wavelength-bin position label (0..1), identical across galaxies.
+        subtraction is applied to the binned curve itself (mags_data - mag_i), not to the
+        per-band magnitudes before binning. Zeroed in bins with no coverage (see channel
+        2), rather than left as the raw -mag_i offset.
+      channel 1: wavelength-bin position label (0..1), identical across sources.
       channel 2: binary coverage mask (1 if any observed band contributes to this bin, 0
         if no observed band covers it at all).
     """
-    n_bins = len(lambda_bin_centers)
-    n_galaxies = len(df)
+    n_sources = mags.shape[1]
 
-    roman_bands = "YJH"
-    mag_columns = [f"mag_{b}_roman" if b in roman_bands else f"mag_{b}_lsst" for b in bands]
+    ind_nan = np.isnan(mags)  # no detection
+    ind_inf = np.isinf(mags)  # no observation
 
-    amplitudes = df[mag_columns].to_numpy()
+    mags_clean = np.where(ind_nan | ind_inf, 0.0, mags)  # (n_filters, n_sources)
 
-    ind_nan = np.isnan(amplitudes)  # no detection
-    ind_inf = np.isinf(amplitudes)  # no observation
+    filters_binned = bin_filters(filters_array, n_bins, lambda_common)  # (n_filters, n_bins)
+    mags_data = mags_clean.T @ filters_binned  # (n_sources, n_bins)
+    mags_data -= mag_i[:, None]  # normalize by i-band mag
 
-    amplitudes_clean = np.where(ind_nan | ind_inf, 0.0, amplitudes)
-
-    mags_data = amplitudes_clean @ filters_binned  # (N, n_bins)
-    mags_data -= df["mag_i_lsst"].to_numpy()[:, None]  # normalize by i-band mag
-
-    observed = (~ind_inf).astype(float)  # 1 if band was observed (nan still counts, inf does not)
-    coverage = (observed @ (filters_binned > 0)) > 0  # (N, n_bins), binary
+    observed = (~ind_inf).T.astype(float)  # (n_sources, n_filters); 1 if band was observed
+    coverage = (observed @ (filters_binned > 0)) > 0  # (n_sources, n_bins), binary
     coverage = coverage.astype(float)
 
-    mags_data = np.where(coverage > 0, mags_data, 0.0)  # no observed band here -> no signal, not -mag_i_lsst
+    mags_data = np.where(coverage > 0, mags_data, 0.0)  # no observed band here -> no signal, not -mag_i
 
     wave_labels = np.arange(n_bins)
     wave_labels = wave_labels / wave_labels[-1]
-    lambda_labels = np.outer(np.ones(n_galaxies), wave_labels)
+    lambda_labels = np.outer(np.ones(n_sources), wave_labels)
 
-    transformed_df = np.stack([mags_data, lambda_labels, coverage], axis=-1)
-    return transformed_df
+    return np.stack([mags_data, lambda_labels, coverage], axis=-1)
 
 
 def transform_data_to_XY(
-    data,
-    filters_binned,
-    bin_idx,
-    lambda_bin_centers,
-    bands,
+    mags,
+    redshift,
+    filters_array,
+    n_bins,
+    lambda_common,
+    mag_i=0.0,
     apply_stretch=True,
     c=0.8,
     k=20,
     missingY=False,
 ):
-    data_transformed = convert_data_format(data, filters_binned, bin_idx, lambda_bin_centers, bands)
-    if missingY is False:
-        Y = data["redshift"]
-    else:
-        Y = 0
-    X = np.copy(data_transformed)
-    if apply_stretch is True:
+    X = convert_data_format(mags, mag_i, filters_array, n_bins, lambda_common)
+    Y = 0 if missingY else redshift
+    if apply_stretch:
         X[:, :, 0] = stretch(X[:, :, 0], c=c, k=k)
     return X, Y
 
 
 def make_incomplete_nir_data(
-    data,
-    filters_binned,
-    bin_idx,
-    lambda_bin_centers,
-    bands,
+    mags,
+    mag_i,
+    redshift,
+    filters_array,
+    n_bins,
+    lambda_common,
+    nir_idx,
     frac=0.5,
-    sub_val=np.inf,
     apply_stretch=False,
 ):
-    subset = data.sample(frac=0.5)
-    idx = list(subset.index)
-    data_copy = data.copy()
-    data_copy.loc[idx, "mag_J_roman"] = np.inf
-    data_copy.loc[idx, "mag_H_roman"] = np.inf
-    X_misnir, Y_misnir = transform_data_to_XY(
-        data_copy, filters_binned, bin_idx, lambda_bin_centers, bands, apply_stretch=apply_stretch
+    """
+    nir_idx: row indices into mags (matching filters_array's band order) of the bands to
+        drop for a random subset of sources, e.g. the J/H rows, so their contribution is
+        treated as unobserved (np.inf) for that subset.
+    """
+    n_sources = mags.shape[1]
+    idx = np.random.choice(n_sources, size=int(round(frac * n_sources)), replace=False)
+    mags_copy = mags.copy()
+    mags_copy[np.ix_(nir_idx, idx)] = np.inf
+    return transform_data_to_XY(
+        mags_copy, redshift, filters_array, n_bins, lambda_common, mag_i=mag_i, apply_stretch=apply_stretch
     )
-    return X_misnir, Y_misnir
