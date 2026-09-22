@@ -56,26 +56,40 @@ def stretch(x, c=0.5, k=10):
 def interpolate_filter_curves(filter_curves, lambda_common):
     """
     Interpolate each band's raw (wavelength, transmission) curve onto lambda_common and
-    area-normalize it so it integrates to 1 over lambda_common.
+    combine them into a filter bank that avoids double-counting overlapping filters.
 
-    filter_curves: dict[str -> (M, 2) array] raw curves keyed by band letter.
-    lambda_common: (L,) shared, uniformly-spaced wavelength grid.
+    filter_curves: dict[str -> (M, 2) array] raw curves keyed by band letter, in the row
+        order to use for every downstream array (mags, filters_array, ownership, ...).
+    lambda_common: (L,) shared wavelength grid.
 
     Math
     ----
     Let T_b(lambda) be band b's raw transmission curve, interpolated onto lambda_common
-    (zero outside its native support). Each band is independently rescaled by its own
-    integral:
+    (zero outside its native support). Two quantities are built from it, each an
+    (n_bands, L) array:
 
-        filters_array_b(lambda) = T_b(lambda) / integral(T_b(lambda) dlambda)
+    1. ownership_b(lambda) = T_b(lambda) / sum_b' T_b'(lambda)
+       (0 where the denominator is 0). At every wavelength this is a partition of unity
+       across bands: sum_b ownership_b(lambda) = 1 wherever any band has transmission
+       there. It answers "of all the transmission present at this wavelength, what
+       fraction belongs to band b?" -- and is what lets overlapping bands split credit
+       instead of each counting the full raw value (double-counting). This alone is what
+       a later per-source "was this band observed here" flag is propagated through (via
+       bin_filters) to get a continuous coverage channel (see convert_data_format).
 
-    so overlapping/wide bands don't dominate purely by having a larger raw area -- credit
-    between overlapping bands is instead split downstream, per wavelength bin, by
-    bin_filters (proportional to each band's actual response share within that bin).
+    2. shape_b(lambda) = T_b(lambda) / max_lambda T_b(lambda)
+       Each band's own transmission curve, rescaled to peak at 1. This preserves a
+       band's internal structure (its jaggedness) instead of letting it flatten to a
+       top-hat wherever it is the sole contributor at a wavelength.
 
-    Returns filters_array, shape (n_bands, L).
+    filters_array_b(lambda) = ownership_b(lambda) * shape_b(lambda) is the final filter
+    bank: bounded in [0, 1], and order-1 wherever a single band dominates a wavelength.
+    This is deliberately NOT further rescaled by a global integral constant -- doing so
+    would shrink every entry and collapse the per-source amplitude signal built
+    downstream to near-zero variance.
+
+    Returns (filters_array, ownership), each shape (n_bands, L).
     """
-    dlambda = lambda_common[1] - lambda_common[0]
     raw_filters = np.array(
         [
             np.interp(lambda_common, filter_curves[b][:, 0], filter_curves[b][:, 1], left=0, right=0)
@@ -83,10 +97,23 @@ def interpolate_filter_curves(filter_curves, lambda_common):
         ]
     )
 
-    area = raw_filters.sum(axis=1, keepdims=True) * dlambda
-    filters_array = np.divide(raw_filters, area, out=np.zeros_like(raw_filters), where=area > 0)
+    total_transmission = raw_filters.sum(axis=0)
+    ownership = np.divide(
+        raw_filters,
+        total_transmission,
+        out=np.zeros_like(raw_filters),
+        where=total_transmission > 0
+    )
 
-    return filters_array
+    #shape = np.divide(
+    #    raw_filters,
+    #    raw_filters.max(axis=1, keepdims=True),
+    #    out=np.zeros_like(raw_filters),
+    #    where=raw_filters.max(axis=1, keepdims=True) > 0,
+    #)
+    filters_array = ownership # * shape
+
+    return filters_array, ownership
 
 
 def make_lambda_bins(lambda_common, n_bins):
@@ -105,76 +132,67 @@ def make_lambda_bins(lambda_common, n_bins):
 
 def bin_filters(filters_array, n_bins, lambda_common):
     """
-    Turn per-lambda-point, area-normalized filter curves (from build_filter_bank) into a
-    fixed (n_bands, n_bins) linear operator, so the whole dataset can be transformed with
-    a single matmul: amplitudes (N, n_bands) @ filters_binned -> (N, n_bins).
+    Turn per-lambda-point filter curves into a fixed (n_bands, n_bins) linear operator
+    that averages each band's curve within each wavelength bin. Folding this into a
+    matrix (rather than binning per source) lets the whole dataset be transformed with a
+    single matmul: mags (n_sources, n_bands) @ filters_binned -> (n_sources, n_bins).
 
-    Each band's curve is integrated (not averaged) within a bin, then each bin's column is
-    rescaled to sum to 1 across bands -- a genuine weighted average, weighted by how much
-    of each contributing band's response actually falls in that bin (so `amplitudes @
-    filters_binned` stays on the same scale as the input magnitudes: a proper per-bin
-    magnitude estimate, not a small fraction of it):
-
-        raw_integral[b, i]   = integral_{bin i} filters_array[b](lambda) dlambda
-        filters_binned[b, i] = raw_integral[b, i] / sum_b' raw_integral[b', i]
-
-    A band contributes to bin i whenever filters_binned[b, i] > 0; that pattern is what
-    convert_data_format checks (against which bands were actually observed for a source)
-    to build the coverage channel -- no separate operator is needed for it.
+    Generic over what's binned: pass filters_array (from interpolate_filter_curves) to
+    get the curve operator, or its ownership term to get the continuous coverage operator
+    (see convert_data_format) -- both need the same per-lambda-point bin average.
 
     Returns filters_binned, shape (n_bands, n_bins).
     """
-    dlambda = lambda_common[1] - lambda_common[0]
     L = filters_array.shape[1]
 
-    lambda_bin_centers, bin_idx = make_lambda_bins(lambda_common, n_bins)
+    _, bin_idx = make_lambda_bins(lambda_common, n_bins)
+    counts = np.bincount(bin_idx, minlength=n_bins)
     W = np.zeros((n_bins, L))
     W[bin_idx, np.arange(L)] = 1.0
+    W = W / np.maximum(counts, 1)[:, None]
 
-    integral = (filters_array @ W.T) * dlambda  # (n_bands, n_bins)
-    integral_sum = integral.sum(axis=0)  # (n_bins,)
-    filters_binned = np.divide(integral, integral_sum, out=np.zeros_like(integral), where=integral_sum > 0)
-
-    return filters_binned
+    return filters_array @ W.T
 
 
-def convert_data_format(mags, mag_i, filters_array, n_bins, lambda_common):
+def convert_data_format(mags, mag_i, filters_array, ownership, n_bins, lambda_common):
     """
     Vectorized over all sources.
 
     mags: (n_filters, n_sources) raw per-band magnitudes, row order matching
-        filters_array's band rows. Missing values are encoded as np.nan (no detection) or
-        np.inf (no observation), same convention as the rest of the module.
-    mag_i: (n_sources,) i-band magnitude, subtracted from the binned curve.
-    filters_array: (n_filters, n_lambda) from interpolate_filter_curves(...).
+        filters_array's/ownership's band rows. Missing values are encoded as np.nan (no
+        detection) or np.inf (no observation), same convention as the rest of the module.
+    mag_i: (n_sources,) i-band magnitude, subtracted from each band's magnitude before
+        binning.
+    filters_array, ownership: (n_filters, n_lambda) each, from
+        interpolate_filter_curves(...).
     n_bins: number of wavelength bins to bin down to.
-    lambda_common: (n_lambda,) wavelength grid matching filters_array.
+    lambda_common: (n_lambda,) wavelength grid matching filters_array/ownership.
 
     Returns X, shape (n_sources, n_bins, 3):
-      channel 0: binned, amplitude-weighted curve value, i-band-normalized -- the i-band
-        subtraction is applied to the binned curve itself (mags_data - mag_i), not to the
-        per-band magnitudes before binning. Zeroed in bins with no coverage (see channel
-        2), rather than left as the raw -mag_i offset.
+      channel 0: binned, i-band-normalized, amplitude-weighted curve value -- the i-band
+        subtraction is applied per band before binning (mags - mag_i), not to the binned
+        curve.
       channel 1: wavelength-bin position label (0..1), identical across sources.
-      channel 2: binary coverage mask (1 if any observed band contributes to this bin, 0
-        if no observed band covers it at all).
+      channel 2: coverage/availability mask in [0, 1] (1 = bin fully backed by observed
+        bands, 0 = bin has no observed-band support, fractional at the boundary between
+        an observed and unobserved band).
     """
     n_sources = mags.shape[1]
 
-    ind_nan = np.isnan(mags)  # no detection
-    ind_inf = np.isinf(mags)  # no observation
+    mags_normed = mags - mag_i[None, :]  # normalize by i-band mag, per band, before binning
 
-    mags_clean = np.where(ind_nan | ind_inf, 0.0, mags)  # (n_filters, n_sources)
+    ind_nan = np.isnan(mags_normed)  # no detection
+    ind_inf = np.isinf(mags_normed)  # no observation
+
+    mags_clean = np.where(ind_nan | ind_inf, 0.0, mags_normed)  # (n_filters, n_sources)
 
     filters_binned = bin_filters(filters_array, n_bins, lambda_common)  # (n_filters, n_bins)
+    ownership_binned = bin_filters(ownership, n_bins, lambda_common)  # (n_filters, n_bins)
+
     mags_data = mags_clean.T @ filters_binned  # (n_sources, n_bins)
-    mags_data -= mag_i[:, None]  # normalize by i-band mag
 
     observed = (~ind_inf).T.astype(float)  # (n_sources, n_filters); 1 if band was observed
-    coverage = (observed @ (filters_binned > 0)) > 0  # (n_sources, n_bins), binary
-    coverage = coverage.astype(float)
-
-    mags_data = np.where(coverage > 0, mags_data, 0.0)  # no observed band here -> no signal, not -mag_i
+    coverage = np.clip(observed @ ownership_binned, 0, 1)  # (n_sources, n_bins)
 
     wave_labels = np.arange(n_bins)
     wave_labels = wave_labels / wave_labels[-1]
@@ -187,6 +205,7 @@ def transform_data_to_XY(
     mags,
     redshift,
     filters_array,
+    ownership,
     n_bins,
     lambda_common,
     mag_i=0.0,
@@ -195,7 +214,7 @@ def transform_data_to_XY(
     k=20,
     missingY=False,
 ):
-    X = convert_data_format(mags, mag_i, filters_array, n_bins, lambda_common)
+    X = convert_data_format(mags, mag_i, filters_array, ownership, n_bins, lambda_common)
     Y = 0 if missingY else redshift
     if apply_stretch:
         X[:, :, 0] = stretch(X[:, :, 0], c=c, k=k)
@@ -204,12 +223,13 @@ def transform_data_to_XY(
 
 def make_incomplete_nir_data(
     mags,
-    mag_i,
     redshift,
     filters_array,
+    ownership,
     n_bins,
     lambda_common,
     nir_idx,
+    mag_i=0.0,
     frac=0.5,
     apply_stretch=False,
 ):
@@ -223,5 +243,5 @@ def make_incomplete_nir_data(
     mags_copy = mags.copy()
     mags_copy[np.ix_(nir_idx, idx)] = np.inf
     return transform_data_to_XY(
-        mags_copy, redshift, filters_array, n_bins, lambda_common, mag_i=mag_i, apply_stretch=apply_stretch
+        mags_copy, redshift, filters_array, ownership, n_bins, lambda_common, mag_i=mag_i, apply_stretch=apply_stretch
     )
