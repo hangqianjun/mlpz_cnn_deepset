@@ -164,9 +164,8 @@ def convert_data_format(
     being overwritten afterwards.
 
     Returns X, shape (N, n_bins, 3):
-      channel 0: binned, amplitude-weighted curve value, i-band-normalized -- the i-band
-        subtraction is applied to the binned curve itself (mags_data - mag_i_lsst), not
-        to the per-band amplitudes before binning.
+      channel 0: binned, amplitude-weighted curve value, rescaled per galaxy by its own
+        peak so values fall in [0, 1] (0 if the galaxy has no coverage at all).
       channel 1: wavelength-bin position label (0..1), identical across galaxies.
       channel 2: binary coverage mask (1 if any observed band contributes to this bin, 0
         if no observed band covers it at all).
@@ -185,7 +184,8 @@ def convert_data_format(
     amplitudes_clean = np.where(ind_nan | ind_inf, 0.0, amplitudes)
 
     mags_data = amplitudes_clean @ filters_binned  # (N, n_bins)
-    mags_data -= df["mag_i_lsst"].to_numpy()[:, None]  # normalize by i-band mag
+    row_max = mags_data.max(axis=1, keepdims=True)
+    mags_data = np.divide(mags_data, row_max, out=np.zeros_like(mags_data), where=row_max > 0)
 
     observed = (~ind_inf).astype(float)  # 1 if band was observed (nan still counts, inf does not)
     coverage = (observed @ (filters_binned > 0)) > 0  # (N, n_bins), binary
