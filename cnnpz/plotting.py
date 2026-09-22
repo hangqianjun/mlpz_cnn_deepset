@@ -23,7 +23,7 @@ def set_plot_style():
 def plot_stats(
     stats, redshift_stats, imag_stats, y_train, y_pred, redshift_bins, imag_bins, i_mag_data, save_path=None
 ):
-    Y = y_train.to_numpy()
+    Y = np.asarray(y_train)
     Y2 = y_pred.flatten()
     dz = (Y2 - Y) / (1 + Y)
 
