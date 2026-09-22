@@ -98,20 +98,15 @@ def interpolate_filter_curves(filter_curves, lambda_common):
     )
 
     total_transmission = raw_filters.sum(axis=0)
-    ownership = np.divide(
-        raw_filters,
-        total_transmission,
-        out=np.zeros_like(raw_filters),
-        where=total_transmission > 0
-    )
+    ownership = np.divide(raw_filters, total_transmission, out=np.zeros_like(raw_filters), where=total_transmission > 0)
 
-    #shape = np.divide(
+    # shape = np.divide(
     #    raw_filters,
     #    raw_filters.max(axis=1, keepdims=True),
     #    out=np.zeros_like(raw_filters),
     #    where=raw_filters.max(axis=1, keepdims=True) > 0,
-    #)
-    filters_array = ownership # * shape
+    # )
+    filters_array = ownership  # * shape
 
     return filters_array, ownership
 
