@@ -10,7 +10,7 @@ try:
 except Exception:  # pragma: no cover - qp missing or unimportable in this env
     QP_INSTALLED = False
 
-__all__ = ["QP_INSTALLED", "package_predictions", "save_predictions"]
+__all__ = ["QP_INSTALLED", "package_predictions", "save_predictions", "predictions_mean_std"]
 
 
 def package_predictions(y_pred_mean, y_pred_std, ids=None):
@@ -50,7 +50,23 @@ def package_predictions(y_pred_mean, y_pred_std, ids=None):
 
     data = {"loc": y_pred_mean.reshape(-1, 1), "scale": y_pred_std.reshape(-1, 1)}
     ancil = {"ids": ids}
-    return qp.stats.norm.create_ensemble(data, ancil)
+    return qp.Ensemble(qp.stats.norm, data=data, ancil=ancil)
+
+
+def predictions_mean_std(result):
+    """
+    Extract per-object predicted redshift mean and std from the output of
+    :func:`package_predictions` (a qp Ensemble or the fallback DataFrame).
+
+    Returns
+    -------
+    y_pred_mean, y_pred_std : np.ndarray
+        Arrays of shape (N, 1), matching the old ``ensemble_predict`` output.
+    """
+    if isinstance(result, pd.DataFrame):
+        return result["mean"].to_numpy().reshape(-1, 1), result["std"].to_numpy().reshape(-1, 1)
+
+    return np.asarray(result.mean()).reshape(-1, 1), np.asarray(result.std()).reshape(-1, 1)
 
 
 def save_predictions(y_pred_mean, y_pred_std, output_filename, ids=None):

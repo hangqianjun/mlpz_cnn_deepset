@@ -106,7 +106,7 @@ def get_all_stats(
     redshift_bins=np.linspace(0, 2.5, 11),
     imag_bins=np.linspace(18, 25.5, 11),
 ):
-    Y = y_train.to_numpy()
+    Y = np.asarray(y_train)
     Y2 = y_pred.flatten()
     dz = (Y2 - Y) / (1 + Y)
     stats = get_biweight_mean_sigma_outlier(dz, nclip=3, abs_out_thresh=0.2)
