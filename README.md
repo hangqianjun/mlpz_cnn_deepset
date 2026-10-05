@@ -6,7 +6,7 @@ Functions and notes for the CNNPZ estimator
 - `CNN_photoz-ensemble-cardinal_with_i_mag.ipynb` experiments adding i-band magnitude information into the sensitivity curve (doesn't seem to work that well)
 - `CNN_photoz-ensemble-pz_challenge_t1/t2.ipyn` running model on the actual data challenge datasets, including pre-training on popcosmos mock for t2.
 
-Data on nersc: 
+Data on nersc:
 `/global/cfs/cdirs/lsst/groups/PZ/users/qhang/cnnpz_data/`
 Under this folder contains:
 `bpz_mock_training_set.parquet`  `cardinal/`  `pop-cosmos-data/`
