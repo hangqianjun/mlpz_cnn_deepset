@@ -6,6 +6,8 @@ import tensorflow as tf
 from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks, layers, models
 
+from .qp_output import package_predictions
+
 __all__ = [
     "build_model",
     "build_model_v2",
@@ -63,7 +65,27 @@ def build_model_v2(input_shape):
 
 
 # --- Prediction: average across all models ---
-def ensemble_predict(trained_models, X_test):
+def ensemble_predict(trained_models, X_test, ids=None):
+    """
+    Predict redshifts with an ensemble of models and package the result as a
+    per-object p(z).
+
+    Parameters
+    ----------
+    trained_models : list of (model, Y_mean, Y_std)
+        Ensemble members, as produced by :func:`train_ensembles`.
+    X_test : array-like
+        Input features to predict on.
+    ids : array-like, optional
+        Per-object identifiers. Defaults to the sample order index (0..N-1).
+
+    Returns
+    -------
+    qp.Ensemble or pandas.DataFrame
+        A qp Ensemble of per-object Gaussians (mean/std from the ensemble) if
+        qp is installed, otherwise a DataFrame with "id", "mean", "std"
+        columns. See :func:`cnnpz.qp_output.package_predictions`.
+    """
     predictions = []
 
     for model, Y_mean, Y_std in trained_models:
@@ -73,7 +95,10 @@ def ensemble_predict(trained_models, X_test):
         predictions.append(y_pred)
 
     # average predictions across all models
-    return np.mean(predictions, axis=0), np.std(predictions, axis=0)
+    y_pred_mean = np.mean(predictions, axis=0)
+    y_pred_std = np.std(predictions, axis=0)
+
+    return package_predictions(y_pred_mean, y_pred_std, ids=ids)
 
 
 def save_ensemble(trained_models, save_dir=""):
