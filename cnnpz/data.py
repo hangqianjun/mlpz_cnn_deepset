@@ -46,13 +46,6 @@ def stretch(x, c=0.5, k=10):
     return np.clip(y, 0, 1)
 
 
-# --- Continuous filter-curve representation ---
-# The supported photometry representation: each band's real transmission curve is
-# interpolated onto a shared wavelength grid and combined into a "filter bank" that
-# fairly splits credit between overlapping filters (no double-counting), then binned
-# down to a fixed number of CNN input bins.
-
-
 def interpolate_filter_curves(filter_curves, lambda_common):
     """
     Interpolate each band's raw (wavelength, transmission) curve onto lambda_common and
