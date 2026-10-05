@@ -83,7 +83,7 @@ def ensemble_predict(trained_models, X_test, ids=None):
     -------
     qp.Ensemble or pandas.DataFrame
         A qp Ensemble of per-object Gaussians (mean/std from the ensemble) if
-        qp is installed, otherwise a DataFrame with "id", "mean", "std"
+        qp is installed, otherwise a DataFrame with "object_id", "mean", "std"
         columns. See :func:`cnnpz.qp_output.package_predictions`.
     """
     predictions = []
