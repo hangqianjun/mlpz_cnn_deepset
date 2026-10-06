@@ -160,9 +160,3 @@ The lower-level steps behind `catalog_to_XY` live in `data.py` and are useful on
 The analysis notebooks live on the `notebooks` branch. They cover the Cardinal and BPZ-template
 tests and the DESC PZ data challenge task sets.
 
-## Data on NERSC
-
-`/global/cfs/cdirs/lsst/groups/PZ/users/qhang/cnnpz_data/` contains:
-- `bpz_mock_training_set.parquet`: the BPZ-template mock used in the BPZ notebook;
-- `cardinal/`: the Cardinal training and test data;
-- `pop-cosmos-data/`: the noisy pop-cosmos photometry for pre-training.
