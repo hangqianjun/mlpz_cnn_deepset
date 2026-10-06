@@ -79,15 +79,36 @@ def _softplus(x):
     return np.logaddexp(0, x)
 
 
-def gaussian_nll(y_true, y_pred):
+def gaussian_nll(y_true, y_pred, beta=0.0):
     """
     Gaussian negative log-likelihood loss for models with two outputs per object: the mean and a raw
     width, mapped to sigma = softplus(raw) + SIGMA_FLOOR so it stays positive.
+
+    beta > 0 gives the beta-NLL of Seitzer et al. (2022): each object's loss is weighted by
+    sigma**(2 * beta), held constant (no gradient through the weight). Plain NLL (beta = 0) scales
+    the gradient on the mean by 1 / sigma**2, so objects with large predicted widths barely train
+    it; beta = 1 gives the mean an MSE-like gradient, beta = 0.5 is the paper's recommendation.
+    The weight does not change the optimal sigma, so the widths stay calibrated.
     """
     y_true = tf.reshape(tf.cast(y_true, y_pred.dtype), [-1])
     mu = y_pred[:, 0]
     sigma = tf.nn.softplus(y_pred[:, 1]) + SIGMA_FLOOR
-    return tf.reduce_mean(tf.math.log(sigma) + 0.5 * tf.square((y_true - mu) / sigma))
+    nll = tf.math.log(sigma) + 0.5 * tf.square((y_true - mu) / sigma)
+    if beta > 0:
+        nll = nll * tf.stop_gradient(sigma ** (2 * beta))
+    return tf.reduce_mean(nll)
+
+
+def _gaussian_loss(beta):
+    """gaussian_nll as a Keras loss (y_true, y_pred) with beta fixed."""
+    if beta == 0:
+        return gaussian_nll
+
+    def loss(y_true, y_pred):
+        return gaussian_nll(y_true, y_pred, beta=beta)
+
+    loss.__name__ = f"beta_nll_{beta:g}"
+    return loss
 
 
 def _is_gaussian(model):
@@ -194,6 +215,13 @@ def load_ensemble(save_dir=""):
     return trained_models
 
 
+def _architecture_json(model):
+    """Model architecture as JSON, without compile settings (loss, optimiser), which inference does not need."""
+    architecture = json.loads(model.to_json())
+    architecture.pop("compile_config", None)
+    return json.dumps(architecture)
+
+
 def save_ensemble_file(path, trained_models, bands, ref_band, config):
     """
     Save an ensemble and everything needed to rebuild its inputs into a single pickle file.
@@ -208,7 +236,7 @@ def save_ensemble_file(path, trained_models, bands, ref_band, config):
     payload = {
         "members": [
             {
-                "architecture": model.to_json(),
+                "architecture": _architecture_json(model),
                 "weights": model.get_weights(),
                 "Y_mean": float(Y_mean),
                 "Y_std": float(Y_std),
@@ -239,7 +267,8 @@ def load_ensemble_file(path):
 
     trained_models = []
     for member in payload["members"]:
-        model = tf.keras.models.model_from_json(member["architecture"])
+        # files saved before compile settings were dropped still name the custom loss
+        model = tf.keras.models.model_from_json(member["architecture"], custom_objects={"gaussian_nll": gaussian_nll})
         model.set_weights(member["weights"])
         trained_models.append((model, member["Y_mean"], member["Y_std"]))
 
@@ -247,11 +276,12 @@ def load_ensemble_file(path):
 
 
 def train_ensembles(
-    build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42, gaussian=False
+    build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42, gaussian=False, beta=0.0
 ):
     """
     Train one model per K-fold split. With gaussian=True each model predicts a Gaussian (mean and
-    width, built with n_outputs=2) and is trained with gaussian_nll; otherwise a point redshift
+    width, built with n_outputs=2) and is trained with gaussian_nll, as beta-NLL when beta > 0; otherwise a
+    point redshift
     trained with MSE.
     """
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=random_state)
@@ -283,7 +313,7 @@ def train_ensembles(
         # Build fresh model for each fold
         if gaussian:
             model = build_model_func(input_shape=X_train.shape[1:], n_outputs=2)
-            model.compile(optimizer="adam", loss=gaussian_nll)
+            model.compile(optimizer="adam", loss=_gaussian_loss(beta))
         else:
             model = build_model_func(input_shape=X_train.shape[1:])
             model.compile(optimizer="adam", loss="mse")
@@ -305,7 +335,9 @@ def train_ensembles(
     return trained_models, histories
 
 
-def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, model_root="", nlayers_forzen=4):
+def fine_tune_pre_trained_model(
+    X_fortrain, Y_fortrain, pretrained_models=None, model_root="", nlayers_forzen=4, beta=0.0
+):
     # need to provide either the model or the model_dir to load the model
     # will always load model if both are provided
 
@@ -354,11 +386,11 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
 
         # Step 3: recompile with a LOWER learning rate — important
         # too high a learning rate will destroy what the model already learned
-        # (the loss follows the pre-trained output: Gaussian models keep training on gaussian_nll)
+        # (the loss follows the pre-trained output: Gaussian models keep training on gaussian_nll, with beta)
         gaussian = _is_gaussian(model)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),  # much lower than default 1e-3
-            loss=gaussian_nll if gaussian else "mse",
+            loss=_gaussian_loss(beta) if gaussian else "mse",
             metrics=[] if gaussian else ["mae"],
         )
 
