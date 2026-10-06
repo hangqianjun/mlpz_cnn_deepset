@@ -7,6 +7,7 @@ import tensorflow as tf
 from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks, layers, models
 
+from .data import DEFAULT_FEATURE_CONFIG, catalog_to_XY, resample_photometry
 from .io import load_filter_curves
 from .qp_output import package_predictions
 
@@ -14,6 +15,7 @@ __all__ = [
     "build_model",
     "build_model_v2",
     "ensemble_predict",
+    "ensemble_predict_resampled",
     "save_ensemble",
     "load_ensemble",
     "save_ensemble_file",
@@ -87,9 +89,8 @@ def ensemble_predict(trained_models, X_test, ids=None):
     ----------
     trained_models : list of (model, Y_mean, Y_std)
         Ensemble members, as produced by :func:`train_ensembles`.
-    X_test : array-like, or list of array-like
-        Input features to predict on, or one array per member (same objects, in the same order),
-        e.g. a different photometric noise realization for each member.
+    X_test : array-like
+        Input features to predict on.
     ids : array-like, optional
         Per-object identifiers. Defaults to the sample order index (0..N-1).
 
@@ -100,13 +101,11 @@ def ensemble_predict(trained_models, X_test, ids=None):
         qp is installed, otherwise a DataFrame with "object_id", "mean", "std"
         columns. See :func:`cnnpz.qp_output.package_predictions`.
     """
-    X_members = _inputs_per_member(X_test, len(trained_models))
-
     predictions = []
 
-    for (model, Y_mean, Y_std), X_member in zip(trained_models, X_members):
+    for model, Y_mean, Y_std in trained_models:
         # predict in normalised space, then denormalise
-        y_pred_norm = model.predict(X_member)
+        y_pred_norm = model.predict(X_test)
         y_pred = y_pred_norm * Y_std + Y_mean  # denormalise
         predictions.append(y_pred)
 
@@ -115,6 +114,59 @@ def ensemble_predict(trained_models, X_test, ids=None):
     y_pred_std = np.std(predictions, axis=0)
 
     return package_predictions(y_pred_mean, y_pred_std, ids=ids)
+
+
+def ensemble_predict_resampled(
+    trained_models,
+    df,
+    errors,
+    n_samples,
+    rng,
+    bands,
+    ref_band,
+    config=DEFAULT_FEATURE_CONFIG,
+    filter_curves=None,
+    ids=None,
+    return_components=False,
+):
+    """
+    Predict p(z) with the photometric errors propagated by Monte Carlo.
+
+    Draws n_samples noise realizations of the catalogue's photometry (see resample_photometry), runs
+    every ensemble member on every realization, and packages the n_samples x n_members predictions per
+    object as a Gaussian p(z) with their mean and std. The number of realizations is independent of the
+    number of members.
+
+    trained_models: list of (model, Y_mean, Y_std), as returned by train_ensembles.
+    df: the catalogue to predict on (see cnnpz.io.read_catalog).
+    errors: dict magnitude column -> its error column, as for resample_photometry.
+    n_samples: number of noise realizations.
+    rng: numpy Generator, e.g. np.random.default_rng(seed).
+    bands, ref_band, config, filter_curves: feature settings, as for catalog_to_XY; a dict of these as
+        returned by load_ensemble_file can be passed as **features.
+    ids: per-object identifiers for the p(z), as for ensemble_predict.
+    return_components: also return the split of the predicted std into its two sources.
+
+    Returns the p(z) as from ensemble_predict. With return_components, returns (p(z), components), where
+    components holds per-object stds that add in quadrature to the total (law of total variance):
+      - "model": spread between members on the same realization, averaged over realizations;
+      - "photometric": spread of the ensemble mean across realizations.
+    """
+    predictions = np.empty((n_samples, len(trained_models), len(df)))
+    for s in range(n_samples):
+        X, _ = catalog_to_XY(resample_photometry(df, errors, rng), bands, ref_band, config, filter_curves=filter_curves)
+        for k, (model, Y_mean, Y_std) in enumerate(trained_models):
+            predictions[s, k] = model.predict(X, batch_size=4096, verbose=0).ravel() * Y_std + Y_mean
+
+    pz = package_predictions(predictions.mean(axis=(0, 1)), predictions.std(axis=(0, 1)), ids=ids)
+    if not return_components:
+        return pz
+
+    components = {
+        "model": np.sqrt(predictions.var(axis=1).mean(axis=0)),
+        "photometric": predictions.mean(axis=1).std(axis=0),
+    }
+    return pz, components
 
 
 def save_ensemble(trained_models, save_dir=""):
