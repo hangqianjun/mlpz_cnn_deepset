@@ -1,11 +1,13 @@
 import json
 import os
+import pickle
 
 import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks, layers, models
 
+from .io import load_filter_curves
 from .qp_output import package_predictions
 
 __all__ = [
@@ -14,6 +16,8 @@ __all__ = [
     "ensemble_predict",
     "save_ensemble",
     "load_ensemble",
+    "save_ensemble_file",
+    "load_ensemble_file",
     "train_ensembles",
     "fine_tune_pre_trained_model",
 ]
@@ -152,6 +156,58 @@ def load_ensemble(save_dir=""):
     return trained_models
 
 
+def save_ensemble_file(path, trained_models, bands, ref_band, config):
+    """
+    Save an ensemble and everything needed to rebuild its inputs into a single pickle file.
+
+    trained_models: list of (model, Y_mean, Y_std) tuples, as returned by train_ensembles.
+    bands, ref_band, config: the feature settings the ensemble was trained with (see
+        cnnpz.catalog_to_XY). The filter curves are loaded and stored too, so estimation does not
+        depend on the filter files still existing.
+
+    Each member is stored as its architecture (JSON) and weights rather than a pickled Keras object.
+    """
+    payload = {
+        "members": [
+            {
+                "architecture": model.to_json(),
+                "weights": model.get_weights(),
+                "Y_mean": float(Y_mean),
+                "Y_std": float(Y_std),
+            }
+            for model, Y_mean, Y_std in trained_models
+        ],
+        "features": {
+            "bands": bands,
+            "ref_band": ref_band,
+            "config": config,
+            "filter_curves": load_filter_curves(bands),
+        },
+    }
+    with open(path, "wb") as f:
+        pickle.dump(payload, f)
+
+
+def load_ensemble_file(path):
+    """
+    Load an ensemble saved with save_ensemble_file.
+
+    Returns (trained_models, features): trained_models is a list of (model, Y_mean, Y_std) tuples
+    for ensemble_predict, and features holds the stored settings as keyword arguments for
+    catalog_to_XY, i.e. ``X, _ = catalog_to_XY(df, **features)``.
+    """
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+
+    trained_models = []
+    for member in payload["members"]:
+        model = tf.keras.models.model_from_json(member["architecture"])
+        model.set_weights(member["weights"])
+        trained_models.append((model, member["Y_mean"], member["Y_std"]))
+
+    return trained_models, payload["features"]
+
+
 def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42):
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=random_state)
 
@@ -204,7 +260,18 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
     # need to provide either the model or the model_dir to load the model
     # will always load model if both are provided
 
-    n_splits = 5 if pretrained_models is None else len(pretrained_models)
+    # Each member keeps the Y normalisation it was pre-trained with, so its output layer stays on the
+    # scale it learned
+    if model_root != "":
+        with open(os.path.join(model_root, "norm_params.json"), "r") as f:
+            pretrained_norms = [(p["Y_mean"], p["Y_std"]) for p in json.load(f)]
+    elif pretrained_models is not None:
+        pretrained_norms = [(Y_mean, Y_std) for _, Y_mean, Y_std in pretrained_models]
+    else:
+        raise ValueError("provide either pretrained_models or model_root")
+
+    # one fold per pre-trained member
+    n_splits = len(pretrained_norms)
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     trained_models = []
@@ -223,7 +290,7 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
         Y_train, Y_val = Y_fortrain[idx_train], Y_fortrain[idx_val]
 
         if model_root != "":
-            model = tf.keras.models.load_model(model_root + f"model_fold_{fold+1}.keras")
+            model = tf.keras.models.load_model(os.path.join(model_root, f"model_fold_{fold+1}.keras"))
         else:
             model = pretrained_models[fold][0]
 
@@ -232,10 +299,7 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
             layer.trainable = False
 
         # same normalization as the pre-training
-        Y_mean = 0
-        Y_std = 3
-        # Normalise Y using train statistics only
-        Y_mean, Y_std = Y_train.mean(), Y_train.std()
+        Y_mean, Y_std = pretrained_norms[fold]
         Y_train_norm = (Y_train - Y_mean) / Y_std
         Y_val_norm = (Y_val - Y_mean) / Y_std
 
