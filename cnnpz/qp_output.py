@@ -21,9 +21,10 @@ def package_predictions(y_pred_mean, y_pred_std, ids=None):
     ``y_pred_mean`` with width ``y_pred_std``.
 
     If ``qp`` is installed, returns a ``qp.Ensemble`` of Gaussians (one per
-    object), with ``ids`` stored as ancillary data. If ``qp`` is not
-    installed, falls back to a ``pandas.DataFrame`` with "id", "mean", "std"
-    columns.
+    object), with ``object_id`` and ``zmode`` (the Gaussian mode, i.e. the
+    mean) stored as ancillary data, following the PZ data challenge
+    convention. If ``qp`` is not installed, falls back to a
+    ``pandas.DataFrame`` with "object_id", "mean", "std" columns.
 
     Parameters
     ----------
@@ -46,10 +47,10 @@ def package_predictions(y_pred_mean, y_pred_std, ids=None):
             "of a qp Ensemble. Install qp-prob to get p(z) ensembles.",
             stacklevel=2,
         )
-        return pd.DataFrame({"id": ids, "mean": y_pred_mean, "std": y_pred_std})
+        return pd.DataFrame({"object_id": ids, "mean": y_pred_mean, "std": y_pred_std})
 
     data = {"loc": y_pred_mean.reshape(-1, 1), "scale": y_pred_std.reshape(-1, 1)}
-    ancil = {"ids": ids}
+    ancil = {"object_id": ids, "zmode": y_pred_mean}
     return qp.Ensemble(qp.stats.norm, data=data, ancil=ancil)
 
 

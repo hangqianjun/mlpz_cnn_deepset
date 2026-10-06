@@ -1,6 +1,9 @@
 import numpy as np
 
+from .io import catalog_to_mags, load_filter_curves
+
 __all__ = [
+    "DEFAULT_FEATURE_CONFIG",
     "rebin_filter",
     "get_bin_edges",
     "stretch",
@@ -10,7 +13,19 @@ __all__ = [
     "convert_data_format",
     "transform_data_to_XY",
     "make_incomplete_nir_data",
+    "catalog_to_XY",
+    "resample_photometry",
 ]
+
+# Processing settings for catalog_to_XY; the bands themselves are always supplied by the user.
+DEFAULT_FEATURE_CONFIG = {
+    "nondetect_value": np.inf,  # np.inf treats non-detections as unobserved
+    "n_lambda": 1000,  # points in the common wavelength grid
+    "n_bins": 32,  # wavelength bins fed to the CNN
+    "apply_stretch": False,
+    "c": 0.8,
+    "k": 20,
+}
 
 
 def rebin_filter(bin_edges, counts, new_edges):
@@ -199,3 +214,74 @@ def make_incomplete_nir_data(
     return transform_data_to_XY(
         mags_copy, redshift, filters_array, n_bins, lambda_common, mag_i=mag_i, apply_stretch=apply_stretch
     )
+
+
+def catalog_to_XY(df, bands, ref_band, config=DEFAULT_FEATURE_CONFIG, filter_curves=None):
+    """
+    Turn a catalogue DataFrame (see cnnpz.io.read_catalog) into CNN inputs.
+
+    bands: dict band -> (magnitude column, filter file path), see cnnpz.io.
+    ref_band: key of `bands` whose magnitude normalizes the others (e.g. "i").
+    config: processing settings, as DEFAULT_FEATURE_CONFIG.
+    filter_curves: optional pre-loaded curves, as returned by cnnpz.io.load_filter_curves; when
+        None they are read from the paths in `bands`.
+
+    The common wavelength grid spans the full range of the bands' filter curves.
+
+    Returns (X, Y): X of shape (n_sources, n_bins, 3), and Y the "redshift" column, or None
+    when df has none (e.g. test catalogues).
+    """
+    if filter_curves is None:
+        filter_curves = load_filter_curves(bands)
+
+    lambda_min = min(curve[:, 0].min() for curve in filter_curves.values())
+    lambda_max = max(curve[:, 0].max() for curve in filter_curves.values())
+    lambda_common = np.linspace(lambda_min, lambda_max, config["n_lambda"])
+    filters_array = interpolate_filter_curves(filter_curves, lambda_common)
+
+    mags = catalog_to_mags(df, bands, config["nondetect_value"])
+    mag_ref = mags[list(bands).index(ref_band)]
+
+    has_redshift = "redshift" in df
+    X, Y = transform_data_to_XY(
+        mags,
+        df["redshift"].to_numpy() if has_redshift else None,
+        filters_array,
+        config["n_bins"],
+        lambda_common,
+        mag_i=mag_ref,
+        apply_stretch=config["apply_stretch"],
+        c=config["c"],
+        k=config["k"],
+        missingY=not has_redshift,
+    )
+    return X, (Y if has_redshift else None)
+
+
+def resample_photometry(df, errors, rng):
+    """
+    Return a copy of a catalogue with its magnitudes redrawn from their photometric errors: one noise
+    realization of the photometry.
+
+    errors: dict magnitude column -> its error column, e.g. {"mag_u_lsst": "mag_u_lsst_err", ...}.
+    rng: numpy Generator, e.g. np.random.default_rng(seed).
+
+    The noise is Gaussian in flux, f = 10**(-0.4 m) with sigma_f = 0.4 ln(10) f sigma_m, as photometric
+    noise is; draws with f <= 0 become non-detections (np.nan). Magnitudes or errors that are not finite
+    (non-detections, unobserved bands) are left unchanged.
+    """
+    out = df.copy()
+    for mag_column, err_column in errors.items():
+        mag = df[mag_column].to_numpy(dtype=float)
+        err = df[err_column].to_numpy(dtype=float)
+        ok = np.isfinite(mag) & np.isfinite(err)
+
+        flux = 10 ** (-0.4 * mag[ok])
+        flux_new = flux + 0.4 * np.log(10) * flux * err[ok] * rng.standard_normal(ok.sum())
+
+        mag_new = mag.copy()
+        mag_new[ok] = np.nan
+        detected = flux_new > 0
+        mag_new[np.flatnonzero(ok)[detected]] = -2.5 * np.log10(flux_new[detected])
+        out[mag_column] = mag_new
+    return out
