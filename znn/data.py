@@ -218,12 +218,12 @@ def make_incomplete_nir_data(
 
 def catalog_to_XY(df, bands, ref_band, config=DEFAULT_FEATURE_CONFIG, filter_curves=None):
     """
-    Turn a catalogue DataFrame (see cnnpz.io.read_catalog) into CNN inputs.
+    Turn a catalogue DataFrame (see znn.io.read_catalog) into CNN inputs.
 
-    bands: dict band -> (magnitude column, filter file path), see cnnpz.io.
+    bands: dict band -> (magnitude column, filter file path), see znn.io.
     ref_band: key of `bands` whose magnitude normalizes the others (e.g. "i").
     config: processing settings, as DEFAULT_FEATURE_CONFIG.
-    filter_curves: optional pre-loaded curves, as returned by cnnpz.io.load_filter_curves; when
+    filter_curves: optional pre-loaded curves, as returned by znn.io.load_filter_curves; when
         None they are read from the paths in `bands`.
 
     The common wavelength grid spans the full range of the bands' filter curves.
