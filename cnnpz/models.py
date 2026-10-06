@@ -8,11 +8,12 @@ from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks, layers, models
 
 from .io import load_filter_curves
-from .qp_output import package_predictions
+from .qp_output import package_mixture_predictions, package_predictions
 
 __all__ = [
     "build_model",
     "build_model_v2",
+    "gaussian_nll",
     "ensemble_predict",
     "save_ensemble",
     "load_ensemble",
@@ -23,8 +24,14 @@ __all__ = [
 ]
 
 
-def build_model(input_shape):
+# Smallest predicted width, in normalised redshift units (multiply by Y_std for redshift)
+SIGMA_FLOOR = 1e-3
+
+
+def build_model(input_shape, n_outputs=1):
     # 6 layers
+    # n_outputs=1: point redshift (train with MSE); n_outputs=2: Gaussian mean and raw width (train
+    # with gaussian_nll)
     model = models.Sequential(
         [
             layers.Conv1D(32, kernel_size=3, activation="relu", padding="same", input_shape=input_shape),
@@ -40,13 +47,13 @@ def build_model(input_shape):
             layers.GlobalAveragePooling1D(),
             layers.Dense(64, activation="relu"),
             layers.Dropout(0.3),
-            layers.Dense(1),
+            layers.Dense(n_outputs),
         ]
     )
     return model
 
 
-def build_model_v2(input_shape):
+def build_model_v2(input_shape, n_outputs=1):
     # 5 layers
     model = models.Sequential(
         [
@@ -62,10 +69,30 @@ def build_model_v2(input_shape):
             layers.GlobalAveragePooling1D(),
             layers.Dense(64, activation="relu"),
             layers.Dropout(0.3),
-            layers.Dense(1),
+            layers.Dense(n_outputs),
         ]
     )
     return model
+
+
+def _softplus(x):
+    return np.logaddexp(0, x)
+
+
+def gaussian_nll(y_true, y_pred):
+    """
+    Gaussian negative log-likelihood loss for models with two outputs per object: the mean and a raw
+    width, mapped to sigma = softplus(raw) + SIGMA_FLOOR so it stays positive.
+    """
+    y_true = tf.reshape(tf.cast(y_true, y_pred.dtype), [-1])
+    mu = y_pred[:, 0]
+    sigma = tf.nn.softplus(y_pred[:, 1]) + SIGMA_FLOOR
+    return tf.reduce_mean(tf.math.log(sigma) + 0.5 * tf.square((y_true - mu) / sigma))
+
+
+def _is_gaussian(model):
+    """True for models predicting a Gaussian (mean and width) rather than a point redshift."""
+    return model.output_shape[-1] == 2
 
 
 # --- Prediction: average across all models ---
@@ -86,10 +113,21 @@ def ensemble_predict(trained_models, X_test, ids=None):
     Returns
     -------
     qp.Ensemble or pandas.DataFrame
-        A qp Ensemble of per-object Gaussians (mean/std from the ensemble) if
-        qp is installed, otherwise a DataFrame with "object_id", "mean", "std"
-        columns. See :func:`cnnpz.qp_output.package_predictions`.
+        For point-redshift members: a qp Ensemble of per-object Gaussians whose mean and std are
+        those of the members' predictions (see :func:`cnnpz.qp_output.package_predictions`).
+        For Gaussian members (two outputs, trained with :func:`gaussian_nll`): a qp Ensemble of
+        per-object equal-weight Gaussian mixtures, one component per member (see
+        :func:`cnnpz.qp_output.package_mixture_predictions`). Without qp, a DataFrame with
+        "object_id", "mean", "std" columns.
     """
+    if all(_is_gaussian(model) for model, _, _ in trained_models):
+        means, sigmas = [], []
+        for model, Y_mean, Y_std in trained_models:
+            out = model.predict(X_test)
+            means.append(out[:, 0] * Y_std + Y_mean)  # denormalise
+            sigmas.append((_softplus(out[:, 1]) + SIGMA_FLOOR) * Y_std)
+        return package_mixture_predictions(np.stack(means, axis=1), np.stack(sigmas, axis=1), ids=ids)
+
     predictions = []
 
     for model, Y_mean, Y_std in trained_models:
@@ -146,7 +184,7 @@ def load_ensemble(save_dir=""):
         fold = params["fold"]
         model_path = os.path.join(save_dir, f"model_fold_{fold}.keras")
 
-        model = tf.keras.models.load_model(model_path)
+        model = tf.keras.models.load_model(model_path, compile=False)  # inference only; no custom loss needed
         Y_mean = params["Y_mean"]
         Y_std = params["Y_std"]
 
@@ -208,7 +246,14 @@ def load_ensemble_file(path):
     return trained_models, payload["features"]
 
 
-def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42):
+def train_ensembles(
+    build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42, gaussian=False
+):
+    """
+    Train one model per K-fold split. With gaussian=True each model predicts a Gaussian (mean and
+    width, built with n_outputs=2) and is trained with gaussian_nll; otherwise a point redshift
+    trained with MSE.
+    """
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=random_state)
 
     trained_models = []
@@ -236,8 +281,12 @@ def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=
         Y_val_norm = (Y_val - Y_mean) / Y_std
 
         # Build fresh model for each fold
-        model = build_model_func(input_shape=X_train.shape[1:])
-        model.compile(optimizer="adam", loss="mse")
+        if gaussian:
+            model = build_model_func(input_shape=X_train.shape[1:], n_outputs=2)
+            model.compile(optimizer="adam", loss=gaussian_nll)
+        else:
+            model = build_model_func(input_shape=X_train.shape[1:])
+            model.compile(optimizer="adam", loss="mse")
 
         # Train
         history = model.fit(
@@ -290,7 +339,7 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
         Y_train, Y_val = Y_fortrain[idx_train], Y_fortrain[idx_val]
 
         if model_root != "":
-            model = tf.keras.models.load_model(os.path.join(model_root, f"model_fold_{fold+1}.keras"))
+            model = tf.keras.models.load_model(os.path.join(model_root, f"model_fold_{fold+1}.keras"), compile=False)
         else:
             model = pretrained_models[fold][0]
 
@@ -305,10 +354,12 @@ def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, 
 
         # Step 3: recompile with a LOWER learning rate — important
         # too high a learning rate will destroy what the model already learned
+        # (the loss follows the pre-trained output: Gaussian models keep training on gaussian_nll)
+        gaussian = _is_gaussian(model)
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),  # much lower than default 1e-3
-            loss="mse",
-            metrics=["mae"],
+            loss=gaussian_nll if gaussian else "mse",
+            metrics=[] if gaussian else ["mae"],
         )
 
         # Step 4: train on new data
