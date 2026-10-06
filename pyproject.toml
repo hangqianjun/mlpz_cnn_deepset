@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cnnpz"
+name = "znn"
 version = "0.1.0"
 description = "CNN photo-z ensemble utilities: data transforms, robust stats, plotting, and model training"
 requires-python = ">=3.9"
@@ -22,7 +22,7 @@ dependencies = [
 qp = ["qp-prob>=1.0.1"]
 
 [tool.setuptools]
-packages = ["cnnpz"]
+packages = ["znn"]
 
 [tool.ruff]
 line-length = 120
@@ -33,4 +33,4 @@ select = ["E", "F", "I", "W"]
 ignore = ["E741"]
 
 [tool.ruff.lint.per-file-ignores]
-"cnnpz/__init__.py" = ["F401", "F403", "E402"]
+"znn/__init__.py" = ["F401", "F403", "E402"]

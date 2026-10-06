@@ -1,4 +1,4 @@
-# cnnpz
+# znn
 
 Photometric redshifts from an ensemble of 1-D convolutional neural networks.
 
@@ -21,7 +21,7 @@ columns instead of a `qp.Ensemble`.
 
 ```python
 import numpy as np
-import cnnpz
+import znn
 
 # band -> (catalogue magnitude column, filter curve file), ordered by wavelength.
 # You always supply these: the package ships no filters.
@@ -35,28 +35,28 @@ BANDS = {
 }
 REF_BAND = "i"  # every magnitude is taken relative to this band
 
-train = cnnpz.read_catalog("training.hdf5")  # needs a "redshift" column
-test = cnnpz.read_catalog("test.hdf5")
+train = znn.read_catalog("training.hdf5")  # needs a "redshift" column
+test = znn.read_catalog("test.hdf5")
 
 # Features and training
-X, z = cnnpz.catalog_to_XY(train, BANDS, REF_BAND)
-models, histories = cnnpz.train_ensembles(cnnpz.build_model, X, z, N_SPLITS=5)
+X, z = znn.catalog_to_XY(train, BANDS, REF_BAND)
+models, histories = znn.train_ensembles(znn.build_model, X, z, N_SPLITS=5)
 
 # p(z) from the spread of the ensemble members
-X_test, _ = cnnpz.catalog_to_XY(test, BANDS, REF_BAND)
-pz = cnnpz.ensemble_predict(models, X_test, ids=test["object_id"].to_numpy())
+X_test, _ = znn.catalog_to_XY(test, BANDS, REF_BAND)
+pz = znn.ensemble_predict(models, X_test, ids=test["object_id"].to_numpy())
 
 # p(z) with the photometric errors propagated: 50 noise draws, each through every member
 errors = {column: f"{column}_err" for column, _ in BANDS.values()}
-pz = cnnpz.ensemble_predict_resampled(
+pz = znn.ensemble_predict_resampled(
     models, test, errors, 50, np.random.default_rng(42), BANDS, REF_BAND, ids=test["object_id"].to_numpy()
 )
 pz.write_to("pz_estimate.hdf5")
 
 # Save the ensemble with everything needed to rebuild its inputs, then reload it
-cnnpz.save_ensemble_file("model.pkl", models, BANDS, REF_BAND, cnnpz.DEFAULT_FEATURE_CONFIG)
-models, features = cnnpz.load_ensemble_file("model.pkl")
-X_test, _ = cnnpz.catalog_to_XY(test, **features)
+znn.save_ensemble_file("model.pkl", models, BANDS, REF_BAND, znn.DEFAULT_FEATURE_CONFIG)
+models, features = znn.load_ensemble_file("model.pkl")
+X_test, _ = znn.catalog_to_XY(test, **features)
 ```
 
 ## How it works
@@ -92,14 +92,14 @@ X_test, _ = cnnpz.catalog_to_XY(test, **features)
 
 | Module | Purpose | Main functions |
 |---|---|---|
-| `cnnpz/io.py` | Reading catalogues and filter curves | `read_catalog`, `load_filter_curves`, `catalog_to_mags` |
-| `cnnpz/data.py` | Building CNN inputs and resampling photometry | `catalog_to_XY`, `resample_photometry`, `DEFAULT_FEATURE_CONFIG` |
-| `cnnpz/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file`, `fine_tune_pre_trained_model` |
-| `cnnpz/qp_output.py` | Packaging predictions as p(z) | `package_predictions`, `save_predictions` |
-| `cnnpz/stats.py` | Robust point-estimate statistics | `get_biweight_mean_sigma_outlier`, `get_all_stats`, `stats_to_markdown` |
-| `cnnpz/plotting.py` | Diagnostic plots | `plot_stats`, `compare_binned_stats`, `plot_ensemble_losses`, `visualize_the_data` |
+| `znn/io.py` | Reading catalogues and filter curves | `read_catalog`, `load_filter_curves`, `catalog_to_mags` |
+| `znn/data.py` | Building CNN inputs and resampling photometry | `catalog_to_XY`, `resample_photometry`, `DEFAULT_FEATURE_CONFIG` |
+| `znn/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file`, `fine_tune_pre_trained_model` |
+| `znn/qp_output.py` | Packaging predictions as p(z) | `package_predictions`, `save_predictions` |
+| `znn/stats.py` | Robust point-estimate statistics | `get_biweight_mean_sigma_outlier`, `get_all_stats`, `stats_to_markdown` |
+| `znn/plotting.py` | Diagnostic plots | `plot_stats`, `compare_binned_stats`, `plot_ensemble_losses`, `visualize_the_data` |
 
-Everything is importable from the top level, e.g. `cnnpz.catalog_to_XY`.
+Everything is importable from the top level, e.g. `znn.catalog_to_XY`.
 
 The lower-level steps behind `catalog_to_XY` live in `data.py` and are useful on their own:
 - `interpolate_filter_curves` puts the curves on a common grid;

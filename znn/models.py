@@ -99,7 +99,7 @@ def ensemble_predict(trained_models, X_test, ids=None):
     qp.Ensemble or pandas.DataFrame
         A qp Ensemble of per-object Gaussians (mean/std from the ensemble) if
         qp is installed, otherwise a DataFrame with "object_id", "mean", "std"
-        columns. See :func:`cnnpz.qp_output.package_predictions`.
+        columns. See :func:`znn.qp_output.package_predictions`.
     """
     predictions = []
 
@@ -138,7 +138,7 @@ def ensemble_predict_resampled(
     number of members.
 
     trained_models: list of (model, Y_mean, Y_std), as returned by train_ensembles.
-    df: the catalogue to predict on (see cnnpz.io.read_catalog).
+    df: the catalogue to predict on (see znn.io.read_catalog).
     errors: dict magnitude column -> its error column, as for resample_photometry.
     n_samples: number of noise realizations.
     rng: numpy Generator, e.g. np.random.default_rng(seed).
@@ -226,7 +226,7 @@ def save_ensemble_file(path, trained_models, bands, ref_band, config):
 
     trained_models: list of (model, Y_mean, Y_std) tuples, as returned by train_ensembles.
     bands, ref_band, config: the feature settings the ensemble was trained with (see
-        cnnpz.catalog_to_XY). The filter curves are loaded and stored too, so estimation does not
+        znn.catalog_to_XY). The filter curves are loaded and stored too, so estimation does not
         depend on the filter files still existing.
 
     Each member is stored as its architecture (JSON) and weights rather than a pickled Keras object.
