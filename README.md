@@ -79,6 +79,10 @@ X_test, _ = znn.catalog_to_XY(test, **features)
      other folds as its validation set.
    - Each member predicts a single redshift, trained with an MSE loss. Targets are scaled as z / 3.
    - Training uses early stopping and reduces the learning rate when the validation loss plateaus.
+   - **Pre-training:** pass a trained ensemble as `pretraining` (with `N_SPLITS` members, e.g. from
+     `load_ensemble_file`). Each member then starts from a copy of the matching pre-trained member, with
+     its first two convolutional blocks frozen, and trains with the same settings as from scratch. The
+     pre-trained ensemble must use the same feature settings, in particular the same wavelength grid.
 
 3. **p(z)** (`ensemble_predict`, `ensemble_predict_resampled`)
    - `ensemble_predict` gives each object a Gaussian with the mean and standard deviation of the K
@@ -95,7 +99,7 @@ X_test, _ = znn.catalog_to_XY(test, **features)
 |---|---|---|
 | `znn/io.py` | Reading catalogues and filter curves | `read_catalog`, `load_filter_curves`, `catalog_to_mags` |
 | `znn/data.py` | Building CNN inputs and resampling photometry | `catalog_to_XY`, `resample_photometry`, `DEFAULT_FEATURE_CONFIG` |
-| `znn/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file`, `fine_tune_pre_trained_model` |
+| `znn/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file` |
 | `znn/qp_output.py` | Packaging predictions as p(z) | `package_predictions`, `save_predictions` |
 | `znn/stats.py` | Robust point-estimate statistics | `get_biweight_mean_sigma_outlier`, `get_all_stats`, `stats_to_markdown` |
 | `znn/plotting.py` | Diagnostic plots | `plot_stats`, `compare_binned_stats`, `plot_ensemble_losses`, `visualize_the_data` |
@@ -145,7 +149,7 @@ The lower-level steps behind `catalog_to_XY` live in `data.py` and are useful on
   feature settings and the filter curves themselves. Estimation then does not need the filter
   files.
 - `save_ensemble` / `load_ensemble` write the older layout: a directory of `.keras` files and
-  `norm_params.json`. `fine_tune_pre_trained_model` reads this layout.
+  `norm_params.json`.
 
 **Statistics**
 - `get_biweight_mean_sigma_outlier(dz)` returns a 5-tuple for dz = (z_pred − z_true) / (1 + z_true),
