@@ -63,7 +63,8 @@ X_test, _ = znn.catalog_to_XY(test, **features)
 
 1. **Photometry to a wavelength-binned vector** (`catalog_to_XY`)
    - Each band's magnitude, minus the reference band's, is spread over that band's filter curve.
-   - The curves sit on a common grid of `n_lambda` points that spans all the filters.
+   - The curves sit on a common grid of `n_lambda` points. By default it spans all the filters; set
+     `lambda_range` to fix it, so that catalogues observed in different filters share the same bins.
    - The grid is then averaged down to `n_bins` wavelength bins.
    - Each object becomes an array of shape `(n_bins, 3)` with three channels:
 
@@ -131,8 +132,8 @@ The lower-level steps behind `catalog_to_XY` live in `data.py` and are useful on
 - Noise is drawn in flux. A draw with negative flux becomes a non-detection.
 
 **Feature settings**
-- `DEFAULT_FEATURE_CONFIG` sets the wavelength grid (`n_lambda`), the number of bins (`n_bins`)
-  and how non-detections are handled.
+- `DEFAULT_FEATURE_CONFIG` sets the wavelength grid (`n_lambda`, and `lambda_range`, which is `None`
+  to span the bands' filter curves), the number of bins (`n_bins`) and how non-detections are handled.
 - Pass a modified copy as `config` to change them.
 
 **Ensembles**
