@@ -21,7 +21,9 @@ __all__ = [
 DEFAULT_FEATURE_CONFIG = {
     "nondetect_value": np.inf,  # np.inf treats non-detections as unobserved
     "n_lambda": 1000,  # points in the common wavelength grid
-    "lambda_range": None,  # (min, max) of the grid; None spans the bands' filter curves
+    # (min, max) of the grid, in Å: the LSST ugrizy + Roman Y106/J129/H158 span, which the bundled pre-trained
+    # weights use. None spans the bands' filter curves instead.
+    "lambda_range": (3000.0, 18650.0),
     "n_bins": 32,  # wavelength bins fed to the CNN
     "apply_stretch": False,
     "c": 0.8,

@@ -40,7 +40,8 @@ test = znn.read_catalog("test.hdf5")
 
 # Features and training
 X, z = znn.catalog_to_XY(train, BANDS, REF_BAND)
-models, histories = znn.train_ensembles(znn.build_model, X, z, N_SPLITS=5)
+models, histories = znn.train_ensembles(znn.build_model, X, z, N_SPLITS=5)  # starts from the pop-cosmos weights
+# models, histories = znn.train_ensembles(znn.build_model, X, z, N_SPLITS=5, pretraining=None)  # from scratch
 
 # p(z) from the spread of the ensemble members
 X_test, _ = znn.catalog_to_XY(test, BANDS, REF_BAND)
@@ -63,8 +64,10 @@ X_test, _ = znn.catalog_to_XY(test, **features)
 
 1. **Photometry to a wavelength-binned vector** (`catalog_to_XY`)
    - Each band's magnitude, minus the reference band's, is spread over that band's filter curve.
-   - The curves sit on a common grid of `n_lambda` points. By default it spans all the filters; set
-     `lambda_range` to fix it, so that catalogues observed in different filters share the same bins.
+   - The curves sit on a common grid of `n_lambda` points spanning `lambda_range`, by default the LSST
+     ugrizy + Roman Y106/J129/H158 range (3000–18650 Å). Catalogues observed in different filters then
+     share the same bins, and filters outside the range are ignored. `lambda_range=None` spans the bands'
+     own filter curves instead.
    - The grid is then averaged down to `n_bins` wavelength bins.
    - Each object becomes an array of shape `(n_bins, 3)` with three channels:
 
@@ -79,10 +82,18 @@ X_test, _ = znn.catalog_to_XY(test, **features)
      other folds as its validation set.
    - Each member predicts a single redshift, trained with an MSE loss. Targets are scaled as z / 3.
    - Training uses early stopping and reduces the learning rate when the validation loss plateaus.
-   - **Pre-training:** pass a trained ensemble as `pretraining` (with `N_SPLITS` members, e.g. from
-     `load_ensemble_file`). Each member then starts from a copy of the matching pre-trained member, with
-     its first two convolutional blocks frozen, and trains with the same settings as from scratch. The
-     pre-trained ensemble must use the same feature settings, in particular the same wavelength grid.
+   - **Pre-training (default):** each member starts from a copy of a pre-trained member, cycling through
+     them (member k starts from pre-trained member k mod K, so any `N_SPLITS` works), with its first two
+     convolutional blocks frozen, and trains with the same settings as from scratch.
+     - `pretraining="popcosmos"` (default): a 5-member ensemble shipped with znn
+       (`znn/pretrained/popcosmos.{json,npz}`), trained on 200k galaxies of the pop-cosmos mock
+       (Zenodo v1.1.0, i < 25.5) in 23 COSMOS2020 bands at their native depth, on the default grid. Its
+       inputs used the default feature config, so yours must too. `znn.load_pretrained()` returns it with
+       its config and provenance.
+     - `pretraining=None`: train every member from scratch.
+     - Your own: a list of `(model, Y_mean, Y_std)`, a `save_ensemble_file` `.pkl` path, or a
+       `save_pretrained` path. Its inputs must be on the same grid as yours.
+     - Pre-training checks the input shape against the pre-trained models but cannot check the grid itself.
 
 3. **p(z)** (`ensemble_predict`, `ensemble_predict_resampled`)
    - `ensemble_predict` gives each object a Gaussian with the mean and standard deviation of the K
@@ -99,7 +110,7 @@ X_test, _ = znn.catalog_to_XY(test, **features)
 |---|---|---|
 | `znn/io.py` | Reading catalogues and filter curves | `read_catalog`, `load_filter_curves`, `catalog_to_mags` |
 | `znn/data.py` | Building CNN inputs and resampling photometry | `catalog_to_XY`, `resample_photometry`, `DEFAULT_FEATURE_CONFIG` |
-| `znn/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file` |
+| `znn/models.py` | Architectures, training, prediction, saving and loading | `build_model`, `train_ensembles`, `ensemble_predict`, `ensemble_predict_resampled`, `save_ensemble_file`, `load_ensemble_file`, `save_pretrained`, `load_pretrained` |
 | `znn/qp_output.py` | Packaging predictions as p(z) | `package_predictions`, `save_predictions` |
 | `znn/stats.py` | Robust point-estimate statistics | `get_biweight_mean_sigma_outlier`, `get_all_stats`, `stats_to_markdown` |
 | `znn/plotting.py` | Diagnostic plots | `plot_stats`, `compare_binned_stats`, `plot_ensemble_losses`, `visualize_the_data` |
@@ -136,8 +147,9 @@ The lower-level steps behind `catalog_to_XY` live in `data.py` and are useful on
 - Noise is drawn in flux. A draw with negative flux becomes a non-detection.
 
 **Feature settings**
-- `DEFAULT_FEATURE_CONFIG` sets the wavelength grid (`n_lambda`, and `lambda_range`, which is `None`
-  to span the bands' filter curves), the number of bins (`n_bins`) and how non-detections are handled.
+- `DEFAULT_FEATURE_CONFIG` sets the wavelength grid (`n_lambda`, and `lambda_range`, the LSST+Roman span by
+  default; `None` spans the bands' filter curves), the number of bins (`n_bins`) and how non-detections are
+  handled. The default pre-training assumes the default grid and `n_bins`.
 - Pass a modified copy as `config` to change them.
 
 **Ensembles**
