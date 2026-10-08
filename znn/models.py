@@ -21,8 +21,15 @@ __all__ = [
     "save_ensemble_file",
     "load_ensemble_file",
     "train_ensembles",
-    "fine_tune_pre_trained_model",
+    "save_pretrained",
+    "load_pretrained",
+    "DEFAULT_PRETRAINING",
 ]
+
+# Pre-trained ensembles shipped with the package, as <name>.json + <name>.npz (see save_pretrained)
+PRETRAINED_DIR = os.path.join(os.path.dirname(__file__), "pretrained")
+# Used by train_ensembles unless pretraining=None: trained on the pop-cosmos mock, on the default grid
+DEFAULT_PRETRAINING = "popcosmos"
 
 
 def build_model(input_shape):
@@ -272,14 +279,108 @@ def load_ensemble_file(path):
     return trained_models, payload["features"]
 
 
-def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=256, random_state=42):
+def save_pretrained(path, trained_models, config, info=None):
+    """
+    Save an ensemble as a pre-training starting point: <path>.json (architecture, Y normalisations, feature
+    config, provenance) and <path>.npz (weights). No pickle, so loading it cannot run code.
+
+    trained_models: list of (model, Y_mean, Y_std), as returned by train_ensembles; all members must share
+        the architecture.
+    config: the feature config the inputs were built with (see znn.catalog_to_XY). Users of the
+        pre-training must build their inputs on the same grid.
+    info: optional dict of provenance (training data, settings, versions), stored as is.
+    """
+    meta = {
+        "architecture": trained_models[0][0].to_json(),
+        "members": [{"Y_mean": float(Y_mean), "Y_std": float(Y_std)} for _, Y_mean, Y_std in trained_models],
+        "config": {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()},
+        "info": info or {},
+    }
+    weights = {f"m{k}_{i}": w for k, (model, _, _) in enumerate(trained_models) for i, w in enumerate(model.get_weights())}
+    with open(f"{path}.json", "w") as f:
+        json.dump(meta, f, indent=2, default=float)
+    np.savez_compressed(f"{path}.npz", **weights)
+
+
+def load_pretrained(name=DEFAULT_PRETRAINING):
+    """
+    Load a pre-trained ensemble saved with save_pretrained.
+
+    name: the name of an ensemble shipped with znn (e.g. "popcosmos"), or a path without extension to a
+        <path>.json / <path>.npz pair.
+
+    Returns (trained_models, config, info): the members as (model, Y_mean, Y_std) tuples, the feature config
+    their inputs were built with, and the provenance dict.
+    """
+    path = os.path.join(PRETRAINED_DIR, name) if os.path.exists(os.path.join(PRETRAINED_DIR, f"{name}.json")) else name
+    with open(f"{path}.json") as f:
+        meta = json.load(f)
+    weights = np.load(f"{path}.npz")
+
+    trained_models = []
+    for k, member in enumerate(meta["members"]):
+        model = tf.keras.models.model_from_json(meta["architecture"])
+        model.set_weights([weights[f"m{k}_{i}"] for i in range(len(model.get_weights()))])
+        trained_models.append((model, member["Y_mean"], member["Y_std"]))
+
+    config = {k: (tuple(v) if isinstance(v, list) else v) for k, v in meta["config"].items()}
+    return trained_models, config, meta["info"]
+
+
+def _resolve_pretraining(pretraining):
+    """The pre-trained members as a list of (model, Y_mean, Y_std), or None to train from scratch."""
+    if pretraining is None:
+        return None
+    if isinstance(pretraining, str):
+        if pretraining.endswith(".pkl"):
+            return load_ensemble_file(pretraining)[0]
+        return load_pretrained(pretraining)[0]
+    return list(pretraining)
+
+
+# Layers kept fixed when training from a pre-trained ensemble: the first two conv + pooling blocks
+N_FROZEN_LAYERS = 4
+
+
+def train_ensembles(
+    build_model_func,
+    X,
+    Y,
+    N_SPLITS=10,
+    EPOCHS=100,
+    BATCH_SIZE=256,
+    random_state=42,
+    pretraining=DEFAULT_PRETRAINING,
+):
     """
     Train one model per K-fold split, each predicting a point redshift trained with MSE.
 
     X is either one feature array shared by all members, or a list of N_SPLITS arrays (same objects, in
     the same order as Y), one per member, e.g. a different photometric noise realization for each.
+
+    pretraining: where each member starts.
+      - "popcosmos" (default): the ensemble shipped with znn, trained on the pop-cosmos mock (see
+        load_pretrained). Its inputs were built with the default feature config, so X must be too (in
+        particular the default lambda_range and n_bins).
+      - None: every member from scratch, built with build_model_func.
+      - your own: the name or path of a save_pretrained pair, the path of a save_ensemble_file .pkl, or a
+        list of (model, Y_mean, Y_std) as returned by train_ensembles. Its inputs must be on the same grid
+        as X.
+      With pre-training, member k starts from a copy of pre-trained member k mod K (K pre-trained members;
+      any N_SPLITS works), with its first N_FROZEN_LAYERS layers frozen and its Y normalisation kept;
+      everything else (optimizer, learning rate, epochs, callbacks, folds) is the same as from scratch, and
+      build_model_func is not used. The pre-trained models are not modified.
     """
+    pretrained = _resolve_pretraining(pretraining)
     X_members = _inputs_per_member(X, N_SPLITS)
+    if pretrained is not None:
+        expected = tuple(pretrained[0][0].input_shape[1:])
+        if tuple(X_members[0].shape[1:]) != expected:
+            raise ValueError(
+                f"inputs have shape {X_members[0].shape[1:]} but the pre-trained models expect {expected}; build "
+                "them with the same feature config as the pre-training, or pass pretraining=None"
+            )
+
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=random_state)
 
     trained_models = []
@@ -300,15 +401,24 @@ def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=
         X_train, X_val = X[idx_train], X[idx_val]
         Y_train, Y_val = Y[idx_train], Y[idx_val]
 
-        # Normalise Y using train statistics only
-        # Y_mean, Y_std = Y_train.mean(), Y_train.std()
-        Y_mean = 0
-        Y_std = 3
+        if pretrained is None:
+            # Build fresh model for each fold
+            model = build_model_func(input_shape=X_train.shape[1:])
+            Y_mean = 0
+            Y_std = 3
+        else:
+            # Copy a pre-trained member (so it is left untouched), cycling through them, freeze its early
+            # layers, and keep the Y normalisation its output layer learned
+            pretrained_model, Y_mean, Y_std = pretrained[fold % len(pretrained)]
+            model = tf.keras.models.clone_model(pretrained_model)
+            model.set_weights(pretrained_model.get_weights())
+            for layer in model.layers[:N_FROZEN_LAYERS]:
+                layer.trainable = False
+
+        # Normalise Y
         Y_train_norm = (Y_train - Y_mean) / Y_std
         Y_val_norm = (Y_val - Y_mean) / Y_std
 
-        # Build fresh model for each fold
-        model = build_model_func(input_shape=X_train.shape[1:])
         model.compile(optimizer="adam", loss="mse")
 
         # Train
@@ -318,78 +428,6 @@ def train_ensembles(build_model_func, X, Y, N_SPLITS=10, EPOCHS=100, BATCH_SIZE=
             validation_data=(X_val, Y_val_norm),
             epochs=EPOCHS,
             batch_size=BATCH_SIZE,
-            callbacks=[early_stop, reduce_lr],
-            verbose=2,
-        )
-
-        trained_models.append((model, Y_mean, Y_std))  # save model + its normalisation
-        histories.append(history)
-
-    return trained_models, histories
-
-
-def fine_tune_pre_trained_model(X_fortrain, Y_fortrain, pretrained_models=None, model_root="", nlayers_forzen=4):
-    # need to provide either the model or the model_dir to load the model
-    # will always load model if both are provided
-
-    # Each member keeps the Y normalisation it was pre-trained with, so its output layer stays on the
-    # scale it learned
-    if model_root != "":
-        with open(os.path.join(model_root, "norm_params.json"), "r") as f:
-            pretrained_norms = [(p["Y_mean"], p["Y_std"]) for p in json.load(f)]
-    elif pretrained_models is not None:
-        pretrained_norms = [(Y_mean, Y_std) for _, Y_mean, Y_std in pretrained_models]
-    else:
-        raise ValueError("provide either pretrained_models or model_root")
-
-    # one fold per pre-trained member
-    n_splits = len(pretrained_norms)
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-    trained_models = []
-    histories = []
-
-    for fold, (idx_train, idx_val) in enumerate(kf.split(X_fortrain)):
-        print(f"\n--- Fold {fold+1}/{n_splits} ---")
-        tf.keras.backend.clear_session()
-
-        # ── Callbacks ─────────────────────────────────────────────────────────────────
-        early_stop = callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
-        reduce_lr = callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1)
-
-        # Split data using fold indices
-        X_train, X_val = X_fortrain[idx_train], X_fortrain[idx_val]
-        Y_train, Y_val = Y_fortrain[idx_train], Y_fortrain[idx_val]
-
-        if model_root != "":
-            model = tf.keras.models.load_model(os.path.join(model_root, f"model_fold_{fold+1}.keras"))
-        else:
-            model = pretrained_models[fold][0]
-
-        # Step 2: optionally freeze early layers (keep low-level features fixed)
-        for layer in model.layers[:nlayers_forzen]:  # freeze first 4 layers
-            layer.trainable = False
-
-        # same normalization as the pre-training
-        Y_mean, Y_std = pretrained_norms[fold]
-        Y_train_norm = (Y_train - Y_mean) / Y_std
-        Y_val_norm = (Y_val - Y_mean) / Y_std
-
-        # Step 3: recompile with a LOWER learning rate — important
-        # too high a learning rate will destroy what the model already learned
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),  # much lower than default 1e-3
-            loss="mse",
-            metrics=["mae"],
-        )
-
-        # Step 4: train on new data
-        history = model.fit(
-            X_train,
-            Y_train_norm,
-            validation_data=(X_val, Y_val_norm),
-            epochs=60,  # fewer epochs than original training
-            batch_size=256,
             callbacks=[early_stop, reduce_lr],
             verbose=2,
         )
